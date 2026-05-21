@@ -1,9 +1,29 @@
 import { PrismaClient } from '@prisma/client'
 
-const prisma = new PrismaClient()
+// Global prisma instance to avoid connection pooling issues in serverless
+const globalForPrisma = globalThis as unknown as { prisma: PrismaClient }
+const prisma = globalForPrisma.prisma || new PrismaClient()
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+
+// Initialize DB on cold start
+let dbInitialized = false
+async function ensureDb() {
+  if (dbInitialized) return
+  try {
+    const { execSync } = await import('child_process')
+    execSync('npx prisma db push --skip-generate', { stdio: 'pipe' })
+    dbInitialized = true
+  } catch {
+    // DB might already exist
+    dbInitialized = true
+  }
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default async function handler(req: any, res: any) {
+  // Ensure DB is ready
+  await ensureDb()
+
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
