@@ -1,29 +1,49 @@
-import { PrismaClient } from '@prisma/client'
+// Simple in-memory storage for Vercel serverless deployment
+// Data persists during the lifetime of the serverless function container
+// For production, replace with PostgreSQL (Supabase, Neon, PlanetScale)
 
-// Global prisma instance to avoid connection pooling issues in serverless
-const globalForPrisma = globalThis as unknown as { prisma: PrismaClient }
-const prisma = globalForPrisma.prisma || new PrismaClient()
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+interface User {
+  id: string
+  email: string
+  name: string
+  plan: string
+  createdAt: string
+}
 
-// Initialize DB on cold start
-let dbInitialized = false
-async function ensureDb() {
-  if (dbInitialized) return
-  try {
-    const { execSync } = await import('child_process')
-    execSync('npx prisma db push --skip-generate', { stdio: 'pipe' })
-    dbInitialized = true
-  } catch {
-    // DB might already exist
-    dbInitialized = true
-  }
+interface Content {
+  id: string
+  userId: string
+  title: string
+  type: string
+  body: string
+  tone: string
+  metadata: string
+  isFavorite: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+// Global storage - persists across requests in the same serverless instance
+const globalForStorage = globalThis as unknown as {
+  users: Map<string, User>
+  contents: Map<string, Content>
+}
+
+if (!globalForStorage.users) {
+  globalForStorage.users = new Map()
+  globalForStorage.contents = new Map()
+}
+
+const users = globalForStorage.users
+const contents = globalForStorage.contents
+
+let idCounter = 1
+function generateId(): string {
+  return `id_${Date.now()}_${idCounter++}`
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default async function handler(req: any, res: any) {
-  // Ensure DB is ready
-  await ensureDb()
-
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -46,6 +66,8 @@ export default async function handler(req: any, res: any) {
         service: 'ContentAI Backend API',
         version: '1.0.0',
         timestamp: new Date().toISOString(),
+        storage: 'in-memory',
+        stats: { users: users.size, contents: contents.size },
       })
       return
     }
@@ -55,11 +77,13 @@ export default async function handler(req: any, res: any) {
       if (req.method === 'POST' && segments[1] === 'signup') {
         const email = req.body.email as string
         const password = req.body.password as string
-        const name = req.body.name as string | undefined
+        const name = req.body.name as string
         if (!email || !password) { res.status(400).json({ error: 'Email and password are required' }); return }
-        const existing = await prisma.user.findUnique({ where: { email } })
+        const existing = [...users.values()].find(u => u.email === email)
         if (existing) { res.status(400).json({ error: 'Email already exists' }); return }
-        const user = await prisma.user.create({ data: { email, name: name || email.split('@')[0] } })
+        const id = generateId()
+        const user: User = { id, email, name: name || email.split('@')[0], plan: 'free', createdAt: new Date().toISOString() }
+        users.set(id, user)
         res.status(201).json({ user: { id: user.id, email: user.email, name: user.name, plan: user.plan } })
         return
       }
@@ -67,14 +91,14 @@ export default async function handler(req: any, res: any) {
         const email = req.body.email as string
         const password = req.body.password as string
         if (!email || !password) { res.status(400).json({ error: 'Email and password are required' }); return }
-        const user = await prisma.user.findUnique({ where: { email } })
+        const user = [...users.values()].find(u => u.email === email)
         if (!user) { res.status(404).json({ error: 'User not found' }); return }
         res.json({ user: { id: user.id, email: user.email, name: user.name, plan: user.plan } })
         return
       }
       if (req.method === 'GET') {
-        const users = await prisma.user.findMany({ select: { id: true, email: true, name: true, plan: true } })
-        res.json({ users })
+        const allUsers = [...users.values()].map(({ id, email, name, plan }) => ({ id, email, name, plan }))
+        res.json({ users: allUsers })
         return
       }
     }
@@ -85,14 +109,14 @@ export default async function handler(req: any, res: any) {
         const userId = req.query.userId as string
         const type = req.query.type as string | undefined
         if (!userId) { res.status(400).json({ error: 'userId is required' }); return }
-        const where: Record<string, string> = { userId }
-        if (type) where.type = type
-        const contents = await prisma.content.findMany({ where, orderBy: { updatedAt: 'desc' } })
-        res.json({ contents })
+        let userContents = [...contents.values()].filter(c => c.userId === userId)
+        if (type) userContents = userContents.filter(c => c.type === type)
+        userContents.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+        res.json({ contents: userContents })
         return
       }
       if (req.method === 'GET' && segments[1]) {
-        const content = await prisma.content.findUnique({ where: { id: segments[1] } })
+        const content = contents.get(segments[1])
         if (!content) { res.status(404).json({ error: 'Content not found' }); return }
         res.json({ content })
         return
@@ -106,17 +130,23 @@ export default async function handler(req: any, res: any) {
         const metadata = (req.body.metadata as string) || '{}'
         const isFavorite = (req.body.isFavorite as boolean) || false
         if (!userId || !title || !type || !body) { res.status(400).json({ error: 'userId, title, type, and body are required' }); return }
-        const content = await prisma.content.create({ data: { userId, title, type, body, tone, metadata, isFavorite } })
+        const id = generateId()
+        const now = new Date().toISOString()
+        const content: Content = { id, userId, title, type, body, tone, metadata, isFavorite, createdAt: now, updatedAt: now }
+        contents.set(id, content)
         res.status(201).json({ content })
         return
       }
       if (req.method === 'PUT' && segments[1]) {
-        const content = await prisma.content.update({ where: { id: segments[1] }, data: req.body as Record<string, unknown> })
-        res.json({ content })
+        const existing = contents.get(segments[1])
+        if (!existing) { res.status(404).json({ error: 'Content not found' }); return }
+        const updated = { ...existing, ...req.body, id: existing.id, updatedAt: new Date().toISOString() }
+        contents.set(segments[1], updated)
+        res.json({ content: updated })
         return
       }
       if (req.method === 'DELETE' && segments[1]) {
-        await prisma.content.delete({ where: { id: segments[1] } })
+        contents.delete(segments[1])
         res.json({ success: true })
         return
       }
@@ -124,7 +154,6 @@ export default async function handler(req: any, res: any) {
 
     // AI routes
     if (route.startsWith('ai/')) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const ZAI = (await import('z-ai-web-dev-sdk')).default
       const zai = await ZAI.create()
 
@@ -199,8 +228,6 @@ export default async function handler(req: any, res: any) {
     res.status(404).json({ error: 'Route not found' })
   } catch (error) {
     console.error('API Error:', error)
-    res.status(500).json({ error: 'Internal server error' })
-  } finally {
-    await prisma.$disconnect()
+    res.status(500).json({ error: 'Internal server error', details: error instanceof Error ? error.message : String(error) })
   }
 }
