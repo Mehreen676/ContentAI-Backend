@@ -2,16 +2,8 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-export default async function handler(req: {
-  method?: string
-  query: Record<string, string | string[] | undefined>
-  body: Record<string, unknown>
-}, res: {
-  setHeader: (key: string, value: string) => void
-  status: (code: number) => ReturnType<typeof res>
-  json: (data: unknown) => void
-  end: () => void
-}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export default async function handler(req: any, res: any) {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
