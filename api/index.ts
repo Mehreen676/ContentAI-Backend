@@ -1,9 +1,21 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+interface RequestLike {
+  method?: string
+  query: Record<string, string | string[] | undefined>
+  body: Record<string, unknown>
+}
+
+interface ResponseLike {
+  setHeader: (key: string, value: string) => void
+  status: (code: number) => ResponseLike
+  json: (data: unknown) => void
+  end: () => void
+}
+
+export default async function handler(req: RequestLike, res: ResponseLike) {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
